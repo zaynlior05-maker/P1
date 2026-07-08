@@ -40,7 +40,6 @@ def get_crypto_price(crypto: str) -> float:
             return float(data[coin_id]["gbp"])
     except Exception as e:
         logger.error(f"Error fetching crypto price: {e}")
-        # Secure fallbacks if the external API rate-limits or fails
         fallbacks = {"btc": 50000.0, "eth": 2500.0, "ltc": 65.0}
         return fallbacks.get(crypto, 50000.0)
 
@@ -48,6 +47,10 @@ def get_crypto_price(crypto: str) -> float:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends the main welcome screen."""
+    # Pull links from Railway variables with fallback placeholders
+    channel_url = os.environ.get("CHANNEL_LINK", "https://t.me/")
+    admin_url = os.environ.get("ADMIN_LINK", "https://t.me/")
+
     text = (
         "👋 **Welcome to The Arcade 🕹️ P1 Bot!**\n\n"
         "This dialler bot is officially provided by The Arcade 🕹️, "
@@ -64,8 +67,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     keyboard = [
         [InlineKeyboardButton("🛍️ Purchase Subscription", callback_data="view_subscription")],
         [
-            InlineKeyboardButton("📢 The Arcade C...", url="https://t.me/your_channel_link"), 
-            InlineKeyboardButton("🎫 Support", callback_data="view_support")
+            InlineKeyboardButton("📢 The Arcade C...", url=channel_url), 
+            InlineKeyboardButton("🎫 Support", url=admin_url)
         ],
         [InlineKeyboardButton("❓ What is P1?", callback_data="what_is_p1")]
     ]
@@ -75,6 +78,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
     elif update.callback_query:
         await update.callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+
+async def what_is_p1_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Displays the informative explanation panel about P1 capability features."""
+    query = update.callback_query
+    await query.answer()
+    
+    text = (
+        "❓ **What is the P1 Bot?**\n\n"
+        "The P1 Bot — a private, fully automated mass-calling system built for professionals.\n\n"
+        "🚀 **How it works**\n"
+        "1. Configure your SIP trunk & Caller ID\n"
+        "2. Pick your audio script\n"
+        "3. Upload a list of phone numbers\n"
+        "4. Hit Start — the bot dials automatically\n"
+        "5. Get an instant alert the moment a lead presses 1\n\n"
+        "✅ **Features**\n"
+        "• Custom Caller ID\n"
+        "• Concurrent outbound dialling\n"
+        "• Auto voice script playback\n"
+        "• Real-time press-1 detection & alerts\n"
+        "• Multi-SIP trunk support & more"
+    )
+    
+    keyboard = [[InlineKeyboardButton("← Back", callback_data="main_menu")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
 async def subscription_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Displays the subscription tier pricing selection."""
@@ -143,9 +172,9 @@ async def handle_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE, pl
     
     sip_flag_str = "1" if sip_active else "0"
     keyboard = [
-        [InlineKeyboardButton("₿ Bitcoin (BTC)", callback_data=f"pay_btc_{plan}_{base_price}_{sip_flag_str}")],
-        [InlineKeyboardButton("Ξ Ethereum (ETH)", callback_data=f"pay_eth_{plan}_{base_price}_{sip_flag_str}")],
-        [InlineKeyboardButton("Ł Litecoin (LTC)", callback_data=f"pay_ltc_{plan}_{base_price}_{sip_flag_str}")],
+        [InlineKeyboardButton("₿ Bitcoin (BTC)", callback_data=f"pay_btc_{plan}_{base_price}_{sip_flag_str}_{total_price}")],
+        [InlineKeyboardButton("Ξ Ethereum (ETH)", callback_data=f"pay_eth_{plan}_{base_price}_{sip_flag_str}_{total_price}")],
+        [InlineKeyboardButton("Ł Litecoin (LTC)", callback_data=f"pay_ltc_{plan}_{base_price}_{sip_flag_str}_{total_price}")],
         [InlineKeyboardButton("← Change Plan", callback_data="view_subscription")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -162,10 +191,7 @@ async def process_payment_page(update: Update, context: ContextTypes.DEFAULT_TYP
     fiat_rate = get_crypto_price(crypto)
     crypto_amount = total_gbp / fiat_rate
     
-    # Calculate window expiration (+15 minutes from now)
     expiry_time = (datetime.datetime.utcnow() + datetime.timedelta(minutes=15)).strftime("%H:%M UTC")
-    
-    # Safely retrieve your address from Railway variables
     wallet_address = get_wallet_address(crypto)
     sip_display = f"Add-on — £{sip_cost}" if sip_active else "None"
     
@@ -182,8 +208,31 @@ async def process_payment_page(update: Update, context: ContextTypes.DEFAULT_TYP
     
     sip_flag_str = "1" if sip_active else "0"
     keyboard = [
-        [InlineKeyboardButton("🔄 Check Payment Status", callback_data=f"check_pay_{crypto}_{total_gbp}")],
+        [InlineKeyboardButton("🔄 Check Payment Status", callback_data=f"check_pay_{crypto}_{crypto_amount:.8f}_{expiry_time}")],
         [InlineKeyboardButton("← Choose Different Crypto", callback_data=f"checkout_{plan}_{base_price}_duration_dummy_{sip_flag_str}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+
+async def process_check_status(update: Update, context: ContextTypes.DEFAULT_TYPE, crypto: str, crypto_amount: str, expiry_time: str) -> None:
+    """Displays the custom Awaiting Payment status panel layout upon verification check."""
+    query = update.callback_query
+    await query.answer("Checking payment processing status...")
+    
+    wallet_address = get_wallet_address(crypto)
+    
+    text = (
+        "⏳ **Awaiting Payment**\n\n"
+        "No transaction detected yet.\n\n"
+        f"**Address:**\n`{wallet_address}`\n"
+        f"**Amount:** `{crypto_amount}` **{crypto.upper()}**\n"
+        f"**Expires:** {expiry_time}\n\n"
+        "Your subscription activates automatically once the transaction confirms."
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("🔄 Refresh", callback_data=f"check_pay_{crypto}_{crypto_amount}_{expiry_time}")],
+        [InlineKeyboardButton("← Back", callback_data="view_subscription")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
@@ -199,6 +248,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await start(update, context)
     elif data == "view_subscription":
         await subscription_menu(update, context)
+    elif data == "what_is_p1":
+        await what_is_p1_menu(update, context)
     elif data.startswith("sub_"):
         parts = data.split("_")
         await sip_addon_menu(update, context, base_plan=parts[1], base_price=int(parts[2]), duration=parts[3], include_sip=False)
@@ -216,11 +267,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         sip_flag = parts[4] == "1"
         await process_payment_page(update, context, crypto=parts[1], plan=parts[2], base_price=int(parts[3]), sip_active=sip_flag)
     elif data.startswith("check_pay_"):
-        await query.answer("Searching block network... No transactions found yet.", show_alert=True)
-    elif data == "view_support":
-        await query.answer("Support portal link coming soon!", show_alert=True)
-    elif data == "what_is_p1":
-        await query.answer("P1 refers to Automated Press-1 Interactive Voice Response (IVR) dialing.", show_alert=True)
+        parts = data.split("_")
+        await process_check_status(update, context, crypto=parts[2], crypto_amount=parts[3], expiry_time=parts[4])
 
 def main() -> None:
     """Starts the bot application."""
@@ -237,4 +285,5 @@ def main() -> None:
     application.run_polling()
 
 if __name__ == "__main__":
+    main()
     main()
