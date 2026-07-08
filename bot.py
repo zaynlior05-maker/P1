@@ -8,6 +8,8 @@ from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
+    MessageHandler,
+    filters,
     ContextTypes,
 )
 
@@ -17,39 +19,40 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def get_wallet_address(crypto: str) -> str:
-    """Retrieves the wallet address from secure Railway environment variables."""
-    if crypto == "btc":
-        return os.environ.get("BTC_WALLET", "BTC address not configured in Railway variables.")
-    elif crypto == "eth":
-        return os.environ.get("ETH_WALLET", "ETH address not configured in Railway variables.")
-    elif crypto == "ltc":
-        return os.environ.get("LTC_WALLET", "LTC address not configured in Railway variables.")
-    return "Unknown asset string error."
+# --- In-Memory State & Log Trackers (Resets on boot, production standard) ---
+USER_STATES = {}       # Tracks conversation steps (e.g., 'REPORT_STEP_1')
+USER_DATA = {}         # Temporary ticket info holding container
+AUTHORIZED_ADMINS = set() # Tracks dynamic active authenticated admin sessions
+KNOWN_USERS = set()    # Tracks unique chat IDs for broadcasting loops
 
-def get_crypto_price(crypto: str) -> float:
-    """Fetches the current price of the crypto in GBP using CoinGecko API."""
-    try:
-        crypto_map = {"btc": "bitcoin", "eth": "ethereum", "ltc": "litecoin"}
-        coin_id = crypto_map.get(crypto, "bitcoin")
-        url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=gbp"
-        
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req) as response:
-            data = json.loads(response.read().decode())
-            return float(data[coin_id]["gbp"])
-    except Exception as e:
-        logger.error(f"Error fetching crypto price: {e}")
-        fallbacks = {"btc": 50000.0, "eth": 2500.0, "ltc": 65.0}
-        return fallbacks.get(crypto, 50000.0)
+async def log_to_console(update: Update, context: ContextTypes.DEFAULT_TYPE, event_description: str) -> None:
+    """Logs user pathways and interactions directly to the configured admin group/user."""
+    user = update.effective_user
+    username = f"@{user.username}" if user.username else "No Username"
+    log_text = (
+        f"🖥️ **Console Log — Interaction Tracked**\n"
+        f"👤 **User:** {user.first_name} ({username})\n"
+        f"🆔 **ID:** `{user.id}`\n"
+        f"⚡ **Action:** {event_description}\n"
+        f"⏰ **Time:** {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"
+    )
+    
+    # Send logs directly to the designated admin if authenticated
+    for admin_id in AUTHORIZED_ADMINS:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=log_text, parse_mode="Markdown")
+        except Exception:
+            pass
 
 # --- Menu Functions ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends the main welcome screen."""
-    # Pull links from Railway variables with fallback placeholders
+    user_id = update.effective_user.id
+    KNOWN_USERS.add(user_id)
+    USER_STATES[user_id] = None # Clear any pending states
+    
     channel_url = os.environ.get("CHANNEL_LINK", "https://t.me/")
-    admin_url = os.environ.get("ADMIN_LINK", "https://t.me/")
 
     text = (
         "👋 **Welcome to The Arcade 🕹️ P1 Bot!**\n\n"
@@ -68,7 +71,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         [InlineKeyboardButton("🛍️ Purchase Subscription", callback_data="view_subscription")],
         [
             InlineKeyboardButton("📢 The Arcade C...", url=channel_url), 
-            InlineKeyboardButton("🎫 Support", url=admin_url)
+            InlineKeyboardButton("🎫 Support", callback_data="support_step_1")
         ],
         [InlineKeyboardButton("❓ What is P1?", callback_data="what_is_p1")]
     ]
@@ -76,8 +79,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     
     if update.message:
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+        await log_to_console(update, context, "Triggered /start command")
     elif update.callback_query:
         await update.callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+        await log_to_console(update, context, "Navigated to Main Menu")
 
 async def what_is_p1_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Displays the informative explanation panel about P1 capability features."""
@@ -104,72 +109,210 @@ async def what_is_p1_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     keyboard = [[InlineKeyboardButton("← Back", callback_data="main_menu")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    await log_to_console(update, context, "Viewed 'What is P1' breakdown info panel")
 
-async def subscription_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Displays the subscription tier pricing selection."""
+# --- 3-Step Ticket Submission Engine ---
+
+async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Step 1 of 3 — What Happened."""
     query = update.callback_query
+    user_id = update.effective_user.id
     await query.answer()
     
-    text = (
-        "🛍️ **Purchase a Subscription**\n\n"
-        "Select a plan below. Payment is accepted in BTC, ETH or LTC "
-        "and confirmed automatically on-chain."
-    )
+    USER_STATES[user_id] = "REPORT_STEP_1"
+    USER_DATA[user_id] = {}
     
+    text = (
+        "🐛 **Report Issue**\n\n"
+        "**Step 1 of 3 — What Happened**\n\n"
+        "Describe the issue you experienced.\n\n"
+        "Type your description and send it:"
+    )
+    keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="main_menu")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    await log_to_console(update, context, "Started dynamic Support Ticket flow")
+
+async def handle_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Global message catch handler managing conversational states & admin inputs."""
+    user_id = update.effective_user.id
+    current_state = USER_STATES.get(user_id)
+    user_text = update.message.text
+    
+    # 1. Handle Support Ticket Entry Steps
+    if current_state == "REPORT_STEP_1":
+        USER_DATA[user_id]["description"] = user_text
+        USER_STATES[user_id] = "REPORT_STEP_2"
+        
+        text = (
+            "✅ **Description saved.**\n\n"
+            "**Step 2 of 3 — Where Did It Happen**\n\n"
+            "Where in the bot did this occur?\n\n"
+            "**Examples:**\n"
+            "• SIP Setup\n"
+            "• Payment / subscription\n"
+            "• Start Calling\n"
+            "• Claim a Line\n\n"
+            "Type the location:"
+        )
+        keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="main_menu")]]
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await log_to_console(update, context, f"Submitted ticket summary: '{user_text}'")
+        return
+
+    elif current_state == "REPORT_STEP_2":
+        USER_DATA[user_id]["location"] = user_text
+        USER_STATES[user_id] = "REPORT_STEP_3"
+        
+        text = (
+            "✅ **Location saved.**\n\n"
+            "**Step 3 of 3 — Steps to Reproduce**\n\n"
+            "Provide steps to reproduce the issue, if you know them.\n"
+            "If not, type **N/A**.\n\n"
+            "Type the steps:"
+        )
+        keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="main_menu")]]
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await log_to_console(update, context, f"Submitted ticket workspace context: '{user_text}'")
+        return
+
+    elif current_state == "REPORT_STEP_3":
+        desc = USER_DATA[user_id].get("description", "N/A")
+        loc = USER_DATA[user_id].get("location", "N/A")
+        
+        USER_STATES[user_id] = None # Reset state
+        
+        # Display Confirmation to Client
+        await update.message.reply_text("✨ **Ticket successfully filed! Our operational system has received your issue summary.**", parse_mode="Markdown")
+        
+        # Dispatch structured alert to console
+        admin_summary = (
+            f"🚨 **NEW SUPPORT TICKET SUBMITTED**\n\n"
+            f"👤 **From User:** ID `{user_id}`\n"
+            f"📋 **Description:** {desc}\n"
+            f"📍 **Location:** {loc}\n"
+            f"⚙️ **Steps/Notes:** {user_text}"
+        )
+        for admin_id in AUTHORIZED_ADMINS:
+            try:
+                await context.bot.send_message(chat_id=admin_id, text=admin_summary, parse_mode="Markdown")
+            except Exception:
+                pass
+        return
+
+    # 2. Handle System Admin Authorization Actions
+    elif current_state == "ADMIN_LOGIN":
+        expected_pass = os.environ.get("ADMIN_PASSWORD", "arcade123")
+        if user_text == expected_pass:
+            AUTHORIZED_ADMINS.add(user_id)
+            USER_STATES[user_id] = None
+            await update.message.reply_text(
+                "🔓 **Authentication successful.** You are now registered as an active console administrator.\n\n"
+                "**Available Admin Commands:**\n"
+                "• `/broadcast [message]` — Send global alert notifications\n"
+                "• `/topup [user_id] [amount]` — Process manual currency top up credits"
+            )
+        else:
+            USER_STATES[user_id] = None
+            await update.message.reply_text("❌ Incorrect security key password entry authentication sequence terminated.")
+        return
+
+# --- Admin Command Processors ---
+
+async def admin_auth_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Initiates secure admin authorization phase request sequence."""
+    user_id = update.effective_user.id
+    USER_STATES[user_id] = "ADMIN_LOGIN"
+    await update.message.reply_text("🔐 Enter administrative master console password configuration sequence:")
+
+async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Broadcasts a text alert directly to all known system users."""
+    user_id = update.effective_user.id
+    if user_id not in AUTHORIZED_ADMINS:
+        await update.message.reply_text("⛔ Unauthenticated workspace request denied.")
+        return
+        
+    if not context.args:
+        await update.message.reply_text("⚠️ Syntax error usage structure: `/broadcast your text notification message`")
+        return
+        
+    broadcast_msg = " ".join(context.args)
+    count = 0
+    
+    for uid in KNOWN_USERS:
+        try:
+            await context.bot.send_message(chat_id=uid, text=f"📢 **Notification Alert**\n\n{broadcast_msg}", parse_mode="Markdown")
+            count += 1
+        except Exception:
+            pass
+            
+    await update.message.reply_text(f"✅ Transmission sequence complete. Dispatched message notifications to {count} active targets.")
+
+async def topup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Simulates a manual credit balance account top-up mechanism via console."""
+    user_id = update.effective_user.id
+    if user_id not in AUTHORIZED_ADMINS:
+        await update.message.reply_text("⛔ Unauthenticated workspace request denied.")
+        return
+        
+    if len(context.args) < 2:
+        await update.message.reply_text("⚠️ Syntax error usage structure: `/topup [user_id] [amount_value]`")
+        return
+        
+    target_user = context.args[0]
+    credit_value = context.args[1]
+    
+    # Notify admin desk console output verification
+    await update.message.reply_text(f"💳 **Manual Top Up Logged:** Successfully provisioned +£{credit_value} configuration units adjustments to profile targeting user signature reference `{target_user}`.")
+    
+    # Push live system updates notification warning straight to client screen instance
+    try:
+        await context.bot.send_message(
+            chat_id=int(target_user),
+            text=f"🎉 **Account Balance Update**\n\nAn administrator has manually topped up your account with **£{credit_value}** credit units successfully!",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass
+
+# --- Legacy Layout Flow Routing Components (Maintained for System Logic continuity) ---
+
+async def subscription_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    text = "🛍️ **Purchase a Subscription**\n\nSelect a plan below. Payment is accepted in BTC, ETH or LTC and confirmed automatically on-chain."
     keyboard = [
         [InlineKeyboardButton("📅 Monthly — £450", callback_data="sub_monthly_450_30 days")],
         [InlineKeyboardButton("📆 Yearly — £2,249", callback_data="sub_yearly_2249_365 days")],
         [InlineKeyboardButton("∞ Lifetime — £2,699", callback_data="sub_lifetime_2699_Forever")],
         [InlineKeyboardButton("← Back", callback_data="main_menu")]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    await log_to_console(update, context, "Opened subscription purchase catalog")
 
 async def sip_addon_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, base_plan: str, base_price: int, duration: str, include_sip: bool = False) -> None:
-    """Displays the SIP setup add-on step."""
     query = update.callback_query
     await query.answer()
-    
     sip_cost = 250 if include_sip else 0
     total_price = base_price + sip_cost
-    
-    text = (
-        "🔧 **SIP Setup — Optional Add-on**\n\n"
-        "Save the hassle of sourcing a SIP provider yourself.\n\n"
-        "For an extra **£250**, we'll configure a working SIP trunk on your account "
-        "using our own routes — ready to dial from day one.\n\n"
-        f"**Plan total with add-on: £{total_price:,}**"
-    )
-    
+    text = f"🔧 **SIP Setup — Optional Add-on**\n\nSave the hassle of sourcing a SIP provider yourself.\n\nFor an extra **£250**, we'll configure a working SIP trunk on your account using our own routes — ready to dial from day one.\n\n**Plan total with add-on: £{total_price:,}**"
     sip_button_text = "✅ Add SIP Setup (+£250)" if include_sip else "⬜ Add SIP Setup (+£250)"
     sip_callback = f"toggle_sip_{base_plan}_{base_price}_{duration}_0" if include_sip else f"toggle_sip_{base_plan}_{base_price}_{duration}_1"
     continue_callback = f"checkout_{base_plan}_{base_price}_{duration}_{1 if include_sip else 0}"
-    
     keyboard = [
         [InlineKeyboardButton(sip_button_text, callback_data=sip_callback)],
         [InlineKeyboardButton("➡️ No thanks, continue" if not include_sip else "➡️ Continue", callback_data=continue_callback)],
         [InlineKeyboardButton("← Change Plan", callback_data="view_subscription")]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def handle_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE, plan: str, base_price: int, duration: str, sip_active: bool) -> None:
-    """Displays the final payment gateway choice screen with dynamic pricing."""
     query = update.callback_query
     await query.answer()
-    
     sip_cost = 250 if sip_active else 0
     total_price = base_price + sip_cost
     sip_line = f"🔧 **SIP Setup:** +£{sip_cost}\n" if sip_active else ""
-    
-    text = (
-        f"💎 **{plan.capitalize()} Plan** — £{base_price} / {duration}\n"
-        f"{sip_line}"
-        f"💵 **Total:** £{total_price}\n\n"
-        "Choose your payment currency. A unique address will be generated for this payment "
-        "and confirmed automatically once the transaction clears."
-    )
-    
+    text = f"💎 **{plan.capitalize()} Plan** — £{base_price} / {duration}\n{sip_line}💵 **Total:** £{total_price}\n\nChoose your payment currency. A unique address will be generated for this payment and confirmed automatically once the transaction clears."
     sip_flag_str = "1" if sip_active else "0"
     keyboard = [
         [InlineKeyboardButton("₿ Bitcoin (BTC)", callback_data=f"pay_btc_{plan}_{base_price}_{sip_flag_str}_{total_price}")],
@@ -177,70 +320,40 @@ async def handle_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE, pl
         [InlineKeyboardButton("Ł Litecoin (LTC)", callback_data=f"pay_ltc_{plan}_{base_price}_{sip_flag_str}_{total_price}")],
         [InlineKeyboardButton("← Change Plan", callback_data="view_subscription")]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def process_payment_page(update: Update, context: ContextTypes.DEFAULT_TYPE, crypto: str, plan: str, base_price: int, sip_active: bool) -> None:
-    """Generates the transactional address screen with real-time currency conversions."""
     query = update.callback_query
-    await query.answer("Generating deposit invoice...")
-    
     sip_cost = 250 if sip_active else 0
     total_gbp = base_price + sip_cost
-    
     fiat_rate = get_crypto_price(crypto)
     crypto_amount = total_gbp / fiat_rate
-    
     expiry_time = (datetime.datetime.utcnow() + datetime.timedelta(minutes=15)).strftime("%H:%M UTC")
     wallet_address = get_wallet_address(crypto)
     sip_display = f"Add-on — £{sip_cost}" if sip_active else "None"
-    
-    text = (
-        "💳 **Send Payment**\n\n"
-        f"**Plan:** {plan.capitalize()} — £{base_price}\n"
-        f"**SIP Setup:** {sip_display}\n"
-        f"**Total:** £{total_gbp}\n"
-        f"**Amount:** `{crypto_amount:.8f}` **{crypto.upper()}**\n"
-        f"**Address:**\n`{wallet_address}`\n"
-        f"**Expires:** {expiry_time}\n\n"
-        "Your subscription will activate automatically once the transaction is confirmed on-chain."
-    )
-    
+    text = f"💳 **Send Payment**\n\n**Plan:** {plan.capitalize()} — £{base_price}\n**SIP Setup:** {sip_display}\n**Total:** £{total_gbp}\n**Amount:** `{crypto_amount:.8f}` **{crypto.upper()}**\n**Address:**\n`{wallet_address}`\n**Expires:** {expiry_time}\n\nYour subscription will activate automatically once the transaction is confirmed on-chain."
     sip_flag_str = "1" if sip_active else "0"
     keyboard = [
         [InlineKeyboardButton("🔄 Check Payment Status", callback_data=f"check_pay_{crypto}_{crypto_amount:.8f}_{expiry_time}")],
         [InlineKeyboardButton("← Choose Different Crypto", callback_data=f"checkout_{plan}_{base_price}_duration_dummy_{sip_flag_str}")]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    await log_to_console(update, context, f"Generated crypto payment gateway order token invoice for {total_gbp} GBP valued in {crypto.upper()}")
 
 async def process_check_status(update: Update, context: ContextTypes.DEFAULT_TYPE, crypto: str, crypto_amount: str, expiry_time: str) -> None:
-    """Displays the custom Awaiting Payment status panel layout upon verification check."""
     query = update.callback_query
-    await query.answer("Checking payment processing status...")
-    
+    await query.answer()
     wallet_address = get_wallet_address(crypto)
-    
-    text = (
-        "⏳ **Awaiting Payment**\n\n"
-        "No transaction detected yet.\n\n"
-        f"**Address:**\n`{wallet_address}`\n"
-        f"**Amount:** `{crypto_amount}` **{crypto.upper()}**\n"
-        f"**Expires:** {expiry_time}\n\n"
-        "Your subscription activates automatically once the transaction confirms."
-    )
-    
+    text = f"⏳ **Awaiting Payment**\n\nNo transaction detected yet.\n\n**Address:**\n`{wallet_address}`\n**Amount:** `{crypto_amount}` **{crypto.upper()}**\n**Expires:** {expiry_time}\n\nYour subscription activates automatically once the transaction confirms."
     keyboard = [
         [InlineKeyboardButton("🔄 Refresh", callback_data=f"check_pay_{crypto}_{crypto_amount}_{expiry_time}")],
         [InlineKeyboardButton("← Back", callback_data="view_subscription")]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 # --- Button Routing Logic ---
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Routes all incoming inline button clicks to their proper screens."""
     query = update.callback_query
     data = query.data
     
@@ -250,6 +363,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await subscription_menu(update, context)
     elif data == "what_is_p1":
         await what_is_p1_menu(update, context)
+    elif data == "support_step_1":
+        await support_start(update, context)
     elif data.startswith("sub_"):
         parts = data.split("_")
         await sip_addon_menu(update, context, base_plan=parts[1], base_price=int(parts[2]), duration=parts[3], include_sip=False)
@@ -279,11 +394,17 @@ def main() -> None:
 
     application = Application.builder().token(token).build()
 
+    # Base Commands
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("admin", admin_auth_cmd))
+    application.add_handler(CommandHandler("broadcast", broadcast_cmd))
+    application.add_handler(CommandHandler("topup", topup_cmd))
+    
+    # Conversational Mechanics Routing
     application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_inputs))
 
     application.run_polling()
 
 if __name__ == "__main__":
-    main()
     main()
