@@ -3,6 +3,7 @@ import logging
 import datetime
 import urllib.request
 import json
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -33,7 +34,6 @@ async def log_to_console(update: Update, context: ContextTypes.DEFAULT_TYPE, eve
 
     username = f"@{user.username}" if user.username else "No Username"
     log_text = (
-        f"🖥 Honor **Console Log — Interaction Tracked**\n"
         f"👤 **User:** {user.first_name} ({username})\n"
         f"🆔 **ID:** `{user.id}`\n"
         f"⚡ **Action:** {event_description}\n"
@@ -43,7 +43,6 @@ async def log_to_console(update: Update, context: ContextTypes.DEFAULT_TYPE, eve
     console_chat_id = os.environ.get("CONSOLE_CHAT_ID")
     if console_chat_id:
         try:
-            # Clean and safely parse group ID formatting
             target_id = console_chat_id.strip()
             if (target_id.startswith("-") or target_id.isdigit()) and "@" not in target_id:
                 target_id = int(target_id)
@@ -52,13 +51,35 @@ async def log_to_console(update: Update, context: ContextTypes.DEFAULT_TYPE, eve
         except Exception as e:
             logger.error(f"Failed to send log to CONSOLE_CHAT_ID Group: {e}")
 
+def _fetch_price_sync(crypto: str) -> float:
+    """Synchronous network fetch with a strict timeout to prevent thread locks."""
+    try:
+        crypto_map = {"btc": "bitcoin", "eth": "ethereum", "ltc": "litecoin"}
+        coin_id = crypto_map.get(crypto, "bitcoin")
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=gbp"
+        
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        # Added a strict 5 second timeout so a slow API can never stall the application
+        with urllib.request.urlopen(req, timeout=5) as response:
+            data = json.loads(response.read().decode())
+            return float(data[coin_id]["gbp"])
+    except Exception as e:
+        logger.error(f"CoinGecko API error or timeout: {e}")
+        # Secure immediate fallbacks if the external network interface fails
+        fallbacks = {"btc": 50000.0, "eth": 2500.0, "ltc": 65.0}
+        return fallbacks.get(crypto, 50000.0)
+
+async def get_crypto_price(crypto: str) -> float:
+    """Asynchronously offloads the network request to a background thread to prevent lags."""
+    return await asyncio.to_thread(_fetch_price_sync, crypto)
+
 # --- Menu Functions ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends the main welcome screen."""
     user_id = update.effective_user.id
     KNOWN_USERS.add(user_id)
-    USER_STATES[user_id] = None # Clear any pending states
+    USER_STATES[user_id] = None 
     
     channel_url = os.environ.get("CHANNEL_LINK", "https://t.me/")
 
@@ -89,7 +110,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
         await log_to_console(update, context, "Triggered /start command")
     elif update.callback_query:
-        await update.callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+        query = update.callback_query
+        await query.answer() # Instantly clears button loading state
+        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
         await log_to_console(update, context, "Navigated to Main Menu")
 
 async def support_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -212,7 +235,6 @@ async def handle_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         await update.message.reply_text("✨ **Ticket successfully filed! Our operational system has received your issue summary.**", parse_mode="Markdown")
         
-        # Dispatch structured alert summary straight to Group chat window
         admin_summary = (
             f"🚨 **NEW SUPPORT TICKET SUBMITTED**\n\n"
             f"👤 **From User:** ID `{user_id}`\n"
@@ -268,7 +290,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     count = 0
     for uid in KNOWN_USERS:
         try:
-            await context.bot.send_message(chat_id=uid, text=f"📢 **Notification Alert**\n\n{broadcast_msg}", parse_mode="Markdown")
+            await context.bot.send_message(chat_id=uid, text=broadcast_msg, parse_mode="Markdown")
             count += 1
         except Exception:
             pass
@@ -346,10 +368,16 @@ async def handle_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE, pl
 
 async def process_payment_page(update: Update, context: ContextTypes.DEFAULT_TYPE, crypto: str, plan: str, base_price: int, sip_active: bool) -> None:
     query = update.callback_query
+    # Instant query answer prevents the interface button from remaining in a loading state while processing
+    await query.answer("Generating deposit invoice...")
+    
     sip_cost = 250 if sip_active else 0
     total_gbp = base_price + sip_cost
-    fiat_rate = get_crypto_price(crypto)
+    
+    # Non-blocking async background fetch handles rates calculation instantly
+    fiat_rate = await get_crypto_price(crypto)
     crypto_amount = total_gbp / fiat_rate
+    
     expiry_time = (datetime.datetime.utcnow() + datetime.timedelta(minutes=15)).strftime("%H:%M UTC")
     wallet_address = get_wallet_address(crypto)
     sip_display = f"Add-on — £{sip_cost}" if sip_active else "None"
