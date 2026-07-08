@@ -94,8 +94,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     channel_url = os.environ.get("CHANNEL_LINK", "https://t.me/")
 
     text = (
-        "👋 **Welcome to The Arcade 🕹️ P1 Bot!**\n\n"
-        "This dialler bot is officially provided by The Arcade 🕹️, "
+        "👋 **Welcome to the Custom 📲 P1 Bot!**\n\n"
+        "This dialler bot is officially provided by Custom 📲, "
         "giving you access to a private, fully automated mass-calling system "
         "with real-time lead detection.\n\n"
         "🚀 **Features**\n"
@@ -103,13 +103,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• Custom Caller ID & multi-trunk SIP support\n"
         "• Real-time press-1 detection with instant alerts\n"
         "• Crypto payments (BTC, ETH, LTC) — confirmed on-chain automatically\n\n"
-        "**Powered by The Arcade 🕹️**"
+        "**Powered by Custom 📲**"
     )
     
     keyboard = [
         [InlineKeyboardButton("🛍️ Purchase Subscription", callback_data="view_subscription")],
         [
-            InlineKeyboardButton("📢 The Arcade C...", url=channel_url), 
+            InlineKeyboardButton("📢 Custom C...", url=channel_url), 
             InlineKeyboardButton("🎫 Support", callback_data="support_main")
         ],
         [InlineKeyboardButton("❓ What is P1?", callback_data="what_is_p1")]
@@ -152,20 +152,24 @@ async def what_is_p1_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
     
     text = (
-        "❓ **What is the P1 Bot?**\n\n"
-        "The P1 Bot — a private, fully automated mass-calling system built for professionals.\n\n"
-        "🚀 **How it works**\n"
-        "1. Configure your SIP trunk & Caller ID\n"
-        "2. Pick your audio script\n"
-        "3. Upload a list of phone numbers\n"
-        "4. Hit Start — the bot dials automatically\n"
-        "5. Get an instant alert the moment a lead presses 1\n\n"
-        "✅ **Features**\n"
-        "• Custom Caller ID\n"
-        "• Concurrent outbound dialling\n"
-        "• Auto voice script playback\n"
-        "• Real-time press-1 detection & alerts\n"
-        "• Multi-SIP trunk support & more"
+        "❓ **What is the P1 Panel?**\n"
+        "A private, automated outbound communication platform built for high-volume operations.\n\n"
+        "🚀 **How it Works**\n"
+        " 1. **Setup:** Connect your SIP trunk and custom Caller ID.\n"
+        " 2. **Upload:** Input your audio script and contact list.\n"
+        " 3. **Launch:** Start the automated multi-channel dialler.\n"
+        " 4. **Route:** Get instant Telegram alerts the moment a recipient presses 1.\n\n"
+        "⚡ **Key Features**\n"
+        " • **Tier-1 Direct Carrier Routing:** High completion rates & low latency.\n"
+        " • **Dynamic Caller ID:** Financial-grade presentation trusted by major worldwide networks.\n"
+        " • **Dual-Way SIP Trunks:** High-capacity inbound and outbound channels.\n"
+        " • **Instant DTMF (Press-1) Detection:** Real-time keypad tracking & live alerts.\n"
+        " • **Virtual Numbers:** Local UK, international, and toll-free numbering.\n"
+        " • **Multi-Level IVR:** Professional voice menus with automated playback.\n"
+        " • **Unified Controls:** Manage via Telegram Bot, Web Panel, or REST API.\n"
+        " • **Omnichannel Delivery:** Integrated SMS and Email gateway features.\n"
+        " • **Live Recording & Analytics:** Secure cloud storage with real-time stats.\n"
+        " • **24/7/365 Tech Support:** Dedicated account management & priority assistance."
     )
     
     keyboard = [[InlineKeyboardButton("← Back", callback_data="main_menu")]]
