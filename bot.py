@@ -19,30 +19,38 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- In-Memory State & Log Trackers (Resets on boot, production standard) ---
+# --- In-Memory State Trackers ---
 USER_STATES = {}       # Tracks conversation steps (e.g., 'REPORT_STEP_1')
 USER_DATA = {}         # Temporary ticket info holding container
 AUTHORIZED_ADMINS = set() # Tracks dynamic active authenticated admin sessions
 KNOWN_USERS = set()    # Tracks unique chat IDs for broadcasting loops
 
 async def log_to_console(update: Update, context: ContextTypes.DEFAULT_TYPE, event_description: str) -> None:
-    """Logs user pathways and interactions directly to the configured admin group/user."""
+    """Logs user pathways and interactions directly to the dedicated CONSOLE_CHAT_ID Group."""
     user = update.effective_user
+    if not user:
+        return
+
     username = f"@{user.username}" if user.username else "No Username"
     log_text = (
-        f"🖥️ **Console Log — Interaction Tracked**\n"
+        f"🖥 Honor **Console Log — Interaction Tracked**\n"
         f"👤 **User:** {user.first_name} ({username})\n"
         f"🆔 **ID:** `{user.id}`\n"
         f"⚡ **Action:** {event_description}\n"
         f"⏰ **Time:** {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"
     )
     
-    # Send logs directly to the designated admin if authenticated
-    for admin_id in AUTHORIZED_ADMINS:
+    console_chat_id = os.environ.get("CONSOLE_CHAT_ID")
+    if console_chat_id:
         try:
-            await context.bot.send_message(chat_id=admin_id, text=log_text, parse_mode="Markdown")
-        except Exception:
-            pass
+            # Clean and safely parse group ID formatting
+            target_id = console_chat_id.strip()
+            if (target_id.startswith("-") or target_id.isdigit()) and "@" not in target_id:
+                target_id = int(target_id)
+                
+            await context.bot.send_message(chat_id=target_id, text=log_text, parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"Failed to send log to CONSOLE_CHAT_ID Group: {e}")
 
 # --- Menu Functions ---
 
@@ -71,7 +79,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         [InlineKeyboardButton("🛍️ Purchase Subscription", callback_data="view_subscription")],
         [
             InlineKeyboardButton("📢 The Arcade C...", url=channel_url), 
-            InlineKeyboardButton("🎫 Support", callback_data="support_step_1")
+            InlineKeyboardButton("🎫 Support", callback_data="support_main")
         ],
         [InlineKeyboardButton("❓ What is P1?", callback_data="what_is_p1")]
     ]
@@ -83,6 +91,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif update.callback_query:
         await update.callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
         await log_to_console(update, context, "Navigated to Main Menu")
+
+async def support_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Displays the custom intermediate Support choices panel option screen."""
+    query = update.callback_query
+    await query.answer()
+    
+    text = (
+        "🎫 **Support**\n\n"
+        "How can we help you today?\n\n"
+        "• Report an issue with the bot\n"
+        "• View the status of your existing tickets"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("🐛 Report Issue", callback_data="support_step_1")],
+        [InlineKeyboardButton("📋 My Tickets", callback_data="support_my_tickets")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="main_menu")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    await log_to_console(update, context, "Opened intermediate Support directory menu")
 
 async def what_is_p1_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Displays the informative explanation panel about P1 capability features."""
@@ -128,7 +157,7 @@ async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "Describe the issue you experienced.\n\n"
         "Type your description and send it:"
     )
-    keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="main_menu")]]
+    keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="support_main")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
     await log_to_console(update, context, "Started dynamic Support Ticket flow")
@@ -139,7 +168,6 @@ async def handle_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE)
     current_state = USER_STATES.get(user_id)
     user_text = update.message.text
     
-    # 1. Handle Support Ticket Entry Steps
     if current_state == "REPORT_STEP_1":
         USER_DATA[user_id]["description"] = user_text
         USER_STATES[user_id] = "REPORT_STEP_2"
@@ -155,9 +183,9 @@ async def handle_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "• Claim a Line\n\n"
             "Type the location:"
         )
-        keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="main_menu")]]
+        keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="support_main")]]
         await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-        await log_to_console(update, context, f"Submitted ticket summary: '{user_text}'")
+        await log_to_console(update, context, f"Submitted ticket summary text: '{user_text}'")
         return
 
     elif current_state == "REPORT_STEP_2":
@@ -171,21 +199,20 @@ async def handle_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "If not, type **N/A**.\n\n"
             "Type the steps:"
         )
-        keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="main_menu")]]
+        keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="support_main")]]
         await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-        await log_to_console(update, context, f"Submitted ticket workspace context: '{user_text}'")
+        await log_to_console(update, context, f"Submitted ticket location text: '{user_text}'")
         return
 
     elif current_state == "REPORT_STEP_3":
         desc = USER_DATA[user_id].get("description", "N/A")
         loc = USER_DATA[user_id].get("location", "N/A")
         
-        USER_STATES[user_id] = None # Reset state
+        USER_STATES[user_id] = None 
         
-        # Display Confirmation to Client
         await update.message.reply_text("✨ **Ticket successfully filed! Our operational system has received your issue summary.**", parse_mode="Markdown")
         
-        # Dispatch structured alert to console
+        # Dispatch structured alert summary straight to Group chat window
         admin_summary = (
             f"🚨 **NEW SUPPORT TICKET SUBMITTED**\n\n"
             f"👤 **From User:** ID `{user_id}`\n"
@@ -193,21 +220,24 @@ async def handle_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"📍 **Location:** {loc}\n"
             f"⚙️ **Steps/Notes:** {user_text}"
         )
-        for admin_id in AUTHORIZED_ADMINS:
+        console_chat_id = os.environ.get("CONSOLE_CHAT_ID")
+        if console_chat_id:
             try:
-                await context.bot.send_message(chat_id=admin_id, text=admin_summary, parse_mode="Markdown")
-            except Exception:
-                pass
+                target_id = console_chat_id.strip()
+                if (target_id.startswith("-") or target_id.isdigit()) and "@" not in target_id:
+                    target_id = int(target_id)
+                await context.bot.send_message(chat_id=target_id, text=admin_summary, parse_mode="Markdown")
+            except Exception as e:
+                logger.error(f"Failed to post ticket summary to group console: {e}")
         return
 
-    # 2. Handle System Admin Authorization Actions
     elif current_state == "ADMIN_LOGIN":
         expected_pass = os.environ.get("ADMIN_PASSWORD", "arcade123")
         if user_text == expected_pass:
             AUTHORIZED_ADMINS.add(user_id)
             USER_STATES[user_id] = None
             await update.message.reply_text(
-                "🔓 **Authentication successful.** You are now registered as an active console administrator.\n\n"
+                "🔓 **Authentication successful.** You are now registered as an active terminal administrator.\n\n"
                 "**Available Admin Commands:**\n"
                 "• `/broadcast [message]` — Send global alert notifications\n"
                 "• `/topup [user_id] [amount]` — Process manual currency top up credits"
@@ -220,13 +250,11 @@ async def handle_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # --- Admin Command Processors ---
 
 async def admin_auth_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Initiates secure admin authorization phase request sequence."""
     user_id = update.effective_user.id
     USER_STATES[user_id] = "ADMIN_LOGIN"
     await update.message.reply_text("🔐 Enter administrative master console password configuration sequence:")
 
 async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Broadcasts a text alert directly to all known system users."""
     user_id = update.effective_user.id
     if user_id not in AUTHORIZED_ADMINS:
         await update.message.reply_text("⛔ Unauthenticated workspace request denied.")
@@ -238,18 +266,15 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         
     broadcast_msg = " ".join(context.args)
     count = 0
-    
     for uid in KNOWN_USERS:
         try:
             await context.bot.send_message(chat_id=uid, text=f"📢 **Notification Alert**\n\n{broadcast_msg}", parse_mode="Markdown")
             count += 1
         except Exception:
             pass
-            
-    await update.message.reply_text(f"✅ Transmission sequence complete. Dispatched message notifications to {count} active targets.")
+    await update.message.reply_text(f"✅ Dispatched message notifications to {count} active targets.")
 
 async def topup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Simulates a manual credit balance account top-up mechanism via console."""
     user_id = update.effective_user.id
     if user_id not in AUTHORIZED_ADMINS:
         await update.message.reply_text("⛔ Unauthenticated workspace request denied.")
@@ -261,11 +286,8 @@ async def topup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
     target_user = context.args[0]
     credit_value = context.args[1]
+    await update.message.reply_text(f"💳 **Manual Top Up Logged:** Successfully provisioned +£{credit_value} to user `{target_user}`.")
     
-    # Notify admin desk console output verification
-    await update.message.reply_text(f"💳 **Manual Top Up Logged:** Successfully provisioned +£{credit_value} configuration units adjustments to profile targeting user signature reference `{target_user}`.")
-    
-    # Push live system updates notification warning straight to client screen instance
     try:
         await context.bot.send_message(
             chat_id=int(target_user),
@@ -275,7 +297,7 @@ async def topup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception:
         pass
 
-# --- Legacy Layout Flow Routing Components (Maintained for System Logic continuity) ---
+# --- Menu Interaction Flow Routing Components ---
 
 async def subscription_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -338,7 +360,7 @@ async def process_payment_page(update: Update, context: ContextTypes.DEFAULT_TYP
         [InlineKeyboardButton("← Choose Different Crypto", callback_data=f"checkout_{plan}_{base_price}_duration_dummy_{sip_flag_str}")]
     ]
     await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-    await log_to_console(update, context, f"Generated crypto payment gateway order token invoice for {total_gbp} GBP valued in {crypto.upper()}")
+    await log_to_console(update, context, f"Generated crypto payment order invoice tracking for £{total_gbp} in {crypto.upper()}")
 
 async def process_check_status(update: Update, context: ContextTypes.DEFAULT_TYPE, crypto: str, crypto_amount: str, expiry_time: str) -> None:
     query = update.callback_query
@@ -350,6 +372,7 @@ async def process_check_status(update: Update, context: ContextTypes.DEFAULT_TYP
         [InlineKeyboardButton("← Back", callback_data="view_subscription")]
     ]
     await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    await log_to_console(update, context, f"Checked network confirmation status on asset {crypto.upper()}")
 
 # --- Button Routing Logic ---
 
@@ -359,12 +382,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     if data == "main_menu":
         await start(update, context)
+    elif data == "support_main":
+        await support_main_menu(update, context)
     elif data == "view_subscription":
         await subscription_menu(update, context)
     elif data == "what_is_p1":
         await what_is_p1_menu(update, context)
     elif data == "support_step_1":
         await support_start(update, context)
+    elif data == "support_my_tickets":
+        await query.answer("You currently have no open active tickets.", show_alert=True)
     elif data.startswith("sub_"):
         parts = data.split("_")
         await sip_addon_menu(update, context, base_plan=parts[1], base_price=int(parts[2]), duration=parts[3], include_sip=False)
@@ -394,13 +421,11 @@ def main() -> None:
 
     application = Application.builder().token(token).build()
 
-    # Base Commands
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("admin", admin_auth_cmd))
     application.add_handler(CommandHandler("broadcast", broadcast_cmd))
     application.add_handler(CommandHandler("topup", topup_cmd))
     
-    # Conversational Mechanics Routing
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_inputs))
 
