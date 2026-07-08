@@ -26,6 +26,18 @@ USER_DATA = {}         # Temporary ticket info holding container
 AUTHORIZED_ADMINS = set() # Tracks dynamic active authenticated admin sessions
 KNOWN_USERS = set()    # Tracks unique chat IDs for broadcasting loops
 
+# --- Wallet & Link Helper Functions ---
+
+def get_wallet_address(crypto: str) -> str:
+    """Retrieves the wallet address from secure Railway environment variables."""
+    if crypto == "btc":
+        return os.environ.get("BTC_WALLET", "BTC address not configured in Railway variables.")
+    elif crypto == "eth":
+        return os.environ.get("ETH_WALLET", "ETH address not configured in Railway variables.")
+    elif crypto == "ltc":
+        return os.environ.get("LTC_WALLET", "LTC address not configured in Railway variables.")
+    return "Unknown asset string error."
+
 async def log_to_console(update: Update, context: ContextTypes.DEFAULT_TYPE, event_description: str) -> None:
     """Logs user pathways and interactions directly to the dedicated CONSOLE_CHAT_ID Group."""
     user = update.effective_user
@@ -59,13 +71,11 @@ def _fetch_price_sync(crypto: str) -> float:
         url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=gbp"
         
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        # Added a strict 5 second timeout so a slow API can never stall the application
         with urllib.request.urlopen(req, timeout=5) as response:
             data = json.loads(response.read().decode())
             return float(data[coin_id]["gbp"])
     except Exception as e:
         logger.error(f"CoinGecko API error or timeout: {e}")
-        # Secure immediate fallbacks if the external network interface fails
         fallbacks = {"btc": 50000.0, "eth": 2500.0, "ltc": 65.0}
         return fallbacks.get(crypto, 50000.0)
 
@@ -111,7 +121,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await log_to_console(update, context, "Triggered /start command")
     elif update.callback_query:
         query = update.callback_query
-        await query.answer() # Instantly clears button loading state
+        await query.answer() 
         await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
         await log_to_console(update, context, "Navigated to Main Menu")
 
@@ -368,27 +378,42 @@ async def handle_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE, pl
 
 async def process_payment_page(update: Update, context: ContextTypes.DEFAULT_TYPE, crypto: str, plan: str, base_price: int, sip_active: bool) -> None:
     query = update.callback_query
-    # Instant query answer prevents the interface button from remaining in a loading state while processing
-    await query.answer("Generating deposit invoice...")
-    
-    sip_cost = 250 if sip_active else 0
-    total_gbp = base_price + sip_cost
-    
-    # Non-blocking async background fetch handles rates calculation instantly
-    fiat_rate = await get_crypto_price(crypto)
-    crypto_amount = total_gbp / fiat_rate
-    
-    expiry_time = (datetime.datetime.utcnow() + datetime.timedelta(minutes=15)).strftime("%H:%M UTC")
-    wallet_address = get_wallet_address(crypto)
-    sip_display = f"Add-on — £{sip_cost}" if sip_active else "None"
-    text = f"💳 **Send Payment**\n\n**Plan:** {plan.capitalize()} — £{base_price}\n**SIP Setup:** {sip_display}\n**Total:** £{total_gbp}\n**Amount:** `{crypto_amount:.8f}` **{crypto.upper()}**\n**Address:**\n`{wallet_address}`\n**Expires:** {expiry_time}\n\nYour subscription will activate automatically once the transaction is confirmed on-chain."
-    sip_flag_str = "1" if sip_active else "0"
-    keyboard = [
-        [InlineKeyboardButton("🔄 Check Payment Status", callback_data=f"check_pay_{crypto}_{crypto_amount:.8f}_{expiry_time}")],
-        [InlineKeyboardButton("← Choose Different Crypto", callback_data=f"checkout_{plan}_{base_price}_duration_dummy_{sip_flag_str}")]
-    ]
-    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-    await log_to_console(update, context, f"Generated crypto payment order invoice tracking for £{total_gbp} in {crypto.upper()}")
+    try:
+        await query.answer("Generating deposit invoice...")
+        
+        sip_cost = 250 if sip_active else 0
+        total_gbp = base_price + sip_cost
+        
+        fiat_rate = await get_crypto_price(crypto)
+        crypto_amount = total_gbp / fiat_rate
+        
+        expiry_time = (datetime.datetime.utcnow() + datetime.timedelta(minutes=15)).strftime("%H:%M UTC")
+        wallet_address = get_wallet_address(crypto)
+        sip_display = f"Add-on — £{sip_cost}" if sip_active else "None"
+        
+        text = (
+            "💳 **Send Payment**\n\n"
+            f"**Plan:** {plan.capitalize()} — £{base_price}\n"
+            f"**SIP Setup:** {sip_display}\n"
+            f"**Total:** £{total_gbp}\n"
+            f"**Amount:** `{crypto_amount:.8f}` **{crypto.upper()}**\n"
+            f"**Address:**\n`{wallet_address}`\n"
+            f"**Expires:** {expiry_time}\n\n"
+            "Your subscription will activate automatically once the transaction is confirmed on-chain."
+        )
+        
+        sip_flag_str = "1" if sip_active else "0"
+        keyboard = [
+            [InlineKeyboardButton("🔄 Check Payment Status", callback_data=f"check_pay_{crypto}_{crypto_amount:.8f}_{expiry_time}")],
+            [InlineKeyboardButton("← Choose Different Crypto", callback_data=f"checkout_{plan}_{base_price}_duration_dummy_{sip_flag_str}")]
+        ]
+        await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await log_to_console(update, context, f"Generated crypto payment order invoice tracking for £{total_gbp} in {crypto.upper()}")
+    except Exception as e:
+        logger.error(f"Error in invoice generation processing block: {e}")
+        fallback_text = "❌ **Invoice Generation Error**\n\nPlease check your Railway environment configuration variables (BTC_WALLET, ETH_WALLET, LTC_WALLET) to verify they are present and correct."
+        keyboard = [[InlineKeyboardButton("← Back", callback_data="view_subscription")]]
+        await query.message.edit_text(fallback_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def process_check_status(update: Update, context: ContextTypes.DEFAULT_TYPE, crypto: str, crypto_amount: str, expiry_time: str) -> None:
     query = update.callback_query
