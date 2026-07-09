@@ -94,8 +94,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     channel_url = os.environ.get("CHANNEL_LINK", "https://t.me/")
 
     text = (
-        "👋 **Welcome to the Custom 📲 P1 Bot!**\n\n"
-        "This dialler bot is officially provided by Custom 📲, "
+        "👋 **Welcome to the spoofers 📲 P1 Bot!**\n\n"
+        "This dialler bot is officially provided by caller for spoofers 📲, "
         "giving you access to a private, fully automated mass-calling system "
         "with real-time lead detection.\n\n"
         "🚀 **Features**\n"
@@ -103,7 +103,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• Custom Caller ID & multi-trunk SIP support\n"
         "• Real-time press-1 detection with instant alerts\n"
         "• Crypto payments (BTC, ETH, LTC) — confirmed on-chain automatically\n\n"
-        "**Powered by Custom 📲**"
+        "**Powered by caller 📲**"
     )
     
     keyboard = [
