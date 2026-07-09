@@ -103,7 +103,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• Custom Caller ID & multi-trunk SIP support\n"
         "• Real-time press-1 detection with instant alerts\n"
         "• Crypto payments (BTC, ETH, LTC) — confirmed on-chain automatically\n\n"
-        "**Powered by caller 📲**"
+        "**Powered for callers 📲**"
     )
     
     keyboard = [
